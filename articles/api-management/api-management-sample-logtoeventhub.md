@@ -1,6 +1,6 @@
 <properties
-   pageTitle="Connecting API Management Gateway to EventHubs for Logging and Analytics"
-   description="Connecting API Management Gateway to EventHubs for Logging and Analytics"
+   pageTitle="Connecting API Management Gateway to Event Hubs for Logging and Analytics"
+   description="Connecting API Management Gateway to Event Hubs for Logging and Analytics"
    services="api-management"
    documentationCenter=""
    authors="darrelmiller"
@@ -18,56 +18,62 @@
 
 # Connecting API Management Gateway to EventHubs for Logging and Analytics
 
-The API Management Gateway can provide many capabilities to enhance the processing of HTTP requests sent to your HTTP API.  However, the existance of the requests and responses are transient.  The request is made, it flows through the gateway to your backend API. Your API processes the request and a response flows back through the gateway to the API consumer. API Management Gateway keeps some important statistics on the APIs for display in the Publisher portal analytics, but beyond that, the details are gone.
+The API Management Gateway provides many capabilities to enhance the processing of HTTP requests sent to your HTTP API.  However, the existance of the requests and responses are transient. The request is made, it flows through the gateway to your backend API. Your API processes the request and a response flows back through the gateway to the API consumer. The API Management service keeps some important statistics about the APIs for display in the Publisher portal dashboard, but beyond that, the details are gone.
 
-By using the log-to-eventhub [policy](api-management-howto-policies.md) policy in the API Gateway you can send any details from the request and response to an [Azure Event Hub](event-hubs-what-is-event-hubs.md).  This article demonstrates how to capture the entire HTTP request and response message, send it to an event hub and then relay that message to a third party service that enables HTTP logging and analytics.
+By using the log-to-eventhub [policy](api-management-howto-policies.md) policy in the API Gateway you can send any details from the request and response to an [Azure Event Hub](event-hubs-what-is-event-hubs.md).  This article demonstrates how to capture the entire HTTP request and response message, send it to an Event Hub and then relay that message to a third party service that provides HTTP logging and monitoring services.
 
 ## Why Send From API Gateway?
-It is possible to write HTTP middleware that can plug into HTTP API frameworks to capture HTTP requests and responses and feed them into logging and analytics systems. The downside to this approach is the HTTP middleware needs to be integrated into the backend API and must match the platform of the API.  If there are multiple APIs then each one must deploy the middleware. Sometimes, there are reasons why backend APIs cannot be updated.
+It is possible to write HTTP middleware that can plug into HTTP API frameworks to capture HTTP requests and responses and feed them into logging and monitoring systems. The downside to this approach is the HTTP middleware needs to be integrated into the backend API and must match the platform of the API.  If there are multiple APIs then each one must deploy the middleware. Often there are reasons why backend APIs cannot be updated.
 
-Using the Azure API Management Gateway to integrate with  logging infrastructure provides a centralized and platform independent solution. It is also scalable in part due to the geo-replication capabilities of Azure API Management.
+Using the Azure API Management Gateway to integrate with logging infrastructure provides a centralized and platform-independent solution. It is also scalable, in part due to the geo-replication capabilities of Azure API Management.
 
-## Why Send To An Event Hub?
-It is a reasonable question to ask, why create a policy that is specific to Azure Event Hubs.  There are many different options for where I might want to log my requests, why not just send the requests directly to the final destination?  That is definitely a potential solution. However, when making logging requests from API Gateway, it is necessary to consider how logging messages will impact the performance of the API. Gradual increases in load can be handled by increasing available instances of system components or by taking advantage of geo-replication.  However, short spikes in traffic can cause requests to be significantly delayed if requests to logging infrastructure start to slow under load.
+## Why Send To An Azure Event Hub?
+It is a reasonable to ask, why create a policy that is specific to Azure Event Hubs? There are many different places where I might want to log my requests. Why not just send the requests directly to the final destination?  That is an option. However, when making logging requests from an API gateway, it is necessary to consider how logging messages will impact the performance of the API. Gradual increases in load can be handled by increasing available instances of system components or by taking advantage of geo-replication.  However, short spikes in traffic can cause requests to be significantly delayed if requests to logging infrastructure start to slow under load.
 
 The Azure Event Hubs is designed to ingress huge volumes of data, with capacity for dealing with a far higher number of events than the number of HTTP requests most APIs process. The Event Hub acts as a kind of sophisticated buffer between your API gateway and the infrastructure that will store and process the messages. This ensures that your API performance will not suffer due to the logging infrastructure.  
 
-Once the data has been passed to an Event Hub it is persisted and will wait for Event Hub conumers to receive it.  The Event Hub does not care how it will be processed, it just cares about making sure the message will be successfully delivered.     
+Once the data has been passed to an Event Hub it is persisted and will wait for Event Hub consumers to process it. The Event Hub does not care how it will be processed, it just cares about making sure the message will be successfully delivered.     
 
 ## A Policy To Send application/http Messages
-Event Hub accepts event data as a simple string. The contents of that string are completely up to you. To be able to package up an HTTP request and send it off to Event Hub we need to select a particular format for creating a string with the   
-request/response information. In situations like this, it is not a good idea to invent a new format where one already exists. Initially I considered using the [HAR](http://www.softwareishard.com/blog/har-12-spec/) for sending HTTP requests and responses.  However, this format is optimized for storing a sequece of HTTP requests in JSON based format.  It contained a number of mandatory elements that added unnecessary complexity for the scenario of passing the HTTP message over the wire.  
+An Event Hub accepts event data as a simple string. The contents of that string are completely up to you. To be able to package up an HTTP request and send it off to Event Hub we need to select a particular format for creating a string with the request or response information. In situations like this, it is not a good idea to invent a new format where one already exists. Initially I considered using the [HAR](http://www.softwareishard.com/blog/har-12-spec/) for sending HTTP requests and responses.  However, this format is optimized for storing a sequence of HTTP requests in a JSON based format.  It contained a number of mandatory elements that added unnecessary complexity for the scenario of passing the HTTP message over the wire.  
 
-An alternative option is using the `application/http` media type as described in the HTTP specification [RFC 7230](http://tools.ietf.org/html/rfc7230). This media type uses the exact same format that is used to actually send HTTP messages over the wire, but the entire message can be put in the body of another HTTP request.  In our case we are just going to use the body as our message to send to Event Hub.
+An alternative option is using the `application/http` media type as described in the HTTP specification [RFC 7230](http://tools.ietf.org/html/rfc7230). This media type uses the exact same format that is used to actually send HTTP messages over the wire, but the entire message can be put in the body of another HTTP request. In our case we are just going to use the body as our message to send to Event Hub.
 
-To be able to create this message we need to take advantage of the Policy expressions available in Azure API Management.  Here is the policy which sends a HTTP request message to Azure Event Hub.
+To be able to create this message we need to take advantage of C# based Policy expressions in Azure API Management.  Here is the policy which sends a HTTP request message to Azure Event Hub.
 
-     <log-to-eventhub logger-id="conferencelogger">
-        @{
-            var requestLine = string.Format("{0} {1} HTTP/1.1\r\n",
-                                                    context.Request.Method,
-                                                    context.Request.Url.Path + context.Request.Url.QueryString);
+       <log-to-eventhub logger-id="conferencelogger" partition-id="0">
+       @{
+           var requestLine = string.Format("{0} {1} HTTP/1.1\r\n",
+                                                       context.Request.Method,
+                                                       context.Request.Url.Path + context.Request.Url.QueryString);
 
-            var body = context.Response.Body?.As<string>(true);
-            if ( body != null && body.Length > 1024) {
-                body  = body.Substring(0,1024);
-            }
+           var body = context.Request.Body?.As<string>(true);
+           if (body != null && body.Length > 1024)
+           {
+               body = body.Substring(0, 1024);
+           }
 
-            var headers = context.Request.Headers
-                            .Select(h => string.Format("{0}: {1}", h.Key, String.Join(", ",h.Value)))
-                            .ToArray<string>();
+           var headers = context.Request.Headers
+                                       .Select(h => string.Format("{0}: {1}", h.Key, String.Join(", ", h.Value)))
+                                       .ToArray<string>();
 
-            return "request:" + context.Variables["message-id"] + "\n"
-                              + requestLine
-                              + string.Join("\r\n", headers)
-                              + "\r\n\r\n" + body;
-        }
-    </log-to-eventhub>
+           var headerString = (headers.Any()) ? string.Join("\r\n", headers) + "\r\n" : string.Empty;
 
-There a few particular things worth mentioning about this policy expression. The log-to-eventhub policy has an attribute called logger-id which refers to the name of logger that has been created within the API Management service. The details of how to setup a Event Hub logger in the API gateway can be found in the document [whatever it is called]().
+           return "request:"   + context.Variables["message-id"] + "\n"
+                               + requestLine + headerString + "\r\n" + body;
+       }
+       </log-to-eventhub>
 
+### Policy Declaration
+There a few particular things worth mentioning about this policy expression. The log-to-eventhub policy has an attribute called logger-id which refers to the name of logger that has been created within the API Management service. The details of how to setup a Event Hub logger in the API gateway can be found in the document [whatever it is called]().  The second attribute is an optional parameter that instructs Event Hub which partition to store the message in.  Event Hubs use partitions to enable scalabilty and have a minimum of two.  The ordered delivery of messages is only guaranteed within a partition.  If we do not direct Event Hub as to which partition to place the message it will use a round-robin algorithm to distribute the load. However, that may cause some of our messages to be processed out of order.  
+
+### Partitions
+To ensure our messages are delivered to consumers in order and take advantage of the load distribution capability of partitions, I chose to send HTTP request messages to one partition and HTTP response messages to a second partition.  This will ensure an even load distribution and we can guarantee that all requests will be consumed in order and all responses will be consumed in order.  It is possible for a response to be consumed before the corresponding request, but as that is not a problem as we have a different mechanism for correlating requests to responses and we know that requests always come before responses.
+
+### HTTP Paylods
 The request body is trucated to only 1024 bytes. This could be increased, however individual Event Hub messages are limited to 256KB, so it is likely that some HTTP message bodies will not fit in a single message. When doing logging and analytics a significant amount of information can be derived from just the HTTP request line and headers. Also, many API requests only return small bodies and so the loss of information value by truncating large bodies is fairly minimal in comparison to the reduction in transfer, processing and storage costs to keep all body contents. One final note about processing the body is that we need to pass `true` to the As<string>() method because we are reading the body contents, but was also want the backend API to be able to read the body.  By passing true to this method we cause the body to be buffered so that it can be read a second time.  This is important to be aware of if you have an API that does uploading of very large files or uses long polling.  In these cases it would be best to avoid reading the body at all.   
 
+### Message Metadata
 When building the complete message to send to the event hub, the first line is not actually part of the `application/http` message.  The first line is additional metadata consisting of whether the message is a request or response message and a message id which is used to correlate requests to responses.  The message id is created by using another policy that looks like this:
 
     <set-variable name="message-id" value="@(Guid.NewGuid())" />
