@@ -1,0 +1,244 @@
+<properties
+   pageTitle="Connecting API Management Gateway to EventHubs for Logging and Analytics"
+   description="Connecting API Management Gateway to EventHubs for Logging and Analytics"
+   services="api-management"
+   documentationCenter=""
+   authors="darrelmiller"
+   manager="manager-alias"
+   editor=""/>
+
+<tags
+   ms.service="api-management"
+   ms.devlang="may be required"
+   ms.topic="article"
+   ms.tgt_pltfrm="may be required"
+   ms.workload="required"
+   ms.date="mm/dd/yyyy"
+   ms.author="darrel@tavis.ca"/>
+
+# Connecting API Management Gateway to EventHubs for Logging and Analytics
+
+The API Management Gateway can provide many capabilities to enhance the processing of HTTP requests sent to your HTTP API.  However, the existance of the requests and responses are transient.  The request is made, it flows through the gateway to your backend API. Your API processes the request and a response flows back through the gateway to the API consumer. API Management Gateway keeps some important statistics on the APIs for display in the Publisher portal analytics, but beyond that, the details are gone.
+
+By using the log-to-eventhub [policy](api-management-howto-policies.md) policy in the API Gateway you can send any details from the request and response to an [Azure Event Hub](event-hubs-what-is-event-hubs.md).  This article demonstrates how to capture the entire HTTP request and response message, send it to an event hub and then relay that message to a third party service that enables HTTP logging and analytics.
+
+## Why Send From API Gateway?
+It is possible to write HTTP middleware that can plug into HTTP API frameworks to capture HTTP requests and responses and feed them into logging and analytics systems. The downside to this approach is the HTTP middleware needs to be integrated into the backend API and must match the platform of the API.  If there are multiple APIs then each one must deploy the middleware. Sometimes, there are reasons why backend APIs cannot be updated.
+
+Using the Azure API Management Gateway to integrate with  logging infrastructure provides a centralized and platform independent solution. It is also scalable in part due to the geo-replication capabilities of Azure API Management.
+
+## Why Send To An Event Hub?
+It is a reasonable question to ask, why create a policy that is specific to Azure Event Hubs.  There are many different options for where I might want to log my requests, why not just send the requests directly to the final destination?  That is definitely a potential solution. However, when making logging requests from API Gateway, it is necessary to consider how logging messages will impact the performance of the API. Gradual increases in load can be handled by increasing available instances of system components or by taking advantage of geo-replication.  However, short spikes in traffic can cause requests to be significantly delayed if requests to logging infrastructure start to slow under load.
+
+The Azure Event Hubs is designed to ingress huge volumes of data, with capacity for dealing with a far higher number of events than the number of HTTP requests most APIs process. The Event Hub acts as a kind of sophisticated buffer between your API gateway and the infrastructure that will store and process the messages. This ensures that your API performance will not suffer due to the logging infrastructure.  
+
+Once the data has been passed to an Event Hub it is persisted and will wait for Event Hub conumers to receive it.  The Event Hub does not care how it will be processed, it just cares about making sure the message will be successfully delivered.     
+
+## A Policy To Send application/http Messages
+Event Hub accepts event data as a simple string. The contents of that string are completely up to you. To be able to package up an HTTP request and send it off to Event Hub we need to select a particular format for creating a string with the   
+request/response information. In situations like this, it is not a good idea to invent a new format where one already exists. Initially I considered using the [HAR](http://www.softwareishard.com/blog/har-12-spec/) for sending HTTP requests and responses.  However, this format is optimized for storing a sequece of HTTP requests in JSON based format.  It contained a number of mandatory elements that added unnecessary complexity for the scenario of passing the HTTP message over the wire.  
+
+An alternative option is using the `application/http` media type as described in the HTTP specification [RFC 7230](http://tools.ietf.org/html/rfc7230). This media type uses the exact same format that is used to actually send HTTP messages over the wire, but the entire message can be put in the body of another HTTP request.  In our case we are just going to use the body as our message to send to Event Hub.
+
+To be able to create this message we need to take advantage of the Policy expressions available in Azure API Management.  Here is the policy which sends a HTTP request message to Azure Event Hub.
+
+     <log-to-eventhub logger-id="conferencelogger">
+        @{
+            var requestLine = string.Format("{0} {1} HTTP/1.1\r\n",
+                                                    context.Request.Method,
+                                                    context.Request.Url.Path + context.Request.Url.QueryString);
+
+            var body = context.Response.Body?.As<string>(true);
+            if ( body != null && body.Length > 1024) {
+                body  = body.Substring(0,1024);
+            }
+
+            var headers = context.Request.Headers
+                            .Select(h => string.Format("{0}: {1}", h.Key, String.Join(", ",h.Value)))
+                            .ToArray<string>();
+
+            return "request:" + context.Variables["message-id"] + "\n"
+                              + requestLine
+                              + string.Join("\r\n", headers)
+                              + "\r\n\r\n" + body;
+        }
+    </log-to-eventhub>
+
+There a few particular things worth mentioning about this policy expression. The log-to-eventhub policy has an attribute called logger-id which refers to the name of logger that has been created within the API Management service. The details of how to setup a Event Hub logger in the API gateway can be found in the document [whatever it is called]().
+
+The request body is trucated to only 1024 bytes. This could be increased, however individual Event Hub messages are limited to 256KB, so it is likely that some HTTP message bodies will not fit in a single message. When doing logging and analytics a significant amount of information can be derived from just the HTTP request line and headers. Also, many API requests only return small bodies and so the loss of information value by truncating large bodies is fairly minimal in comparison to the reduction in transfer, processing and storage costs to keep all body contents. One final note about processing the body is that we need to pass `true` to the As<string>() method because we are reading the body contents, but was also want the backend API to be able to read the body.  By passing true to this method we cause the body to be buffered so that it can be read a second time.  This is important to be aware of if you have an API that does uploading of very large files or uses long polling.  In these cases it would be best to avoid reading the body at all.   
+
+When building the complete message to send to the event hub, the first line is not actually part of the `application/http` message.  The first line is additional metadata consisting of whether the message is a request or response message and a message id which is used to correlate requests to responses.  The message id is created by using another policy that looks like this:
+
+    <set-variable name="message-id" value="@(Guid.NewGuid())" />
+
+We could have created the request message, stored that in a variable until the response was returned and then simply sent the request and response as a single message.  However, by sending the request and response independently and using a message id to correlate the two, we get a bit more flexibily in the message size, the request will appear in our logging dashboard sooner.  There also may be some scenarios where a valid response is never sent to the event hub, possibly due to a fatal request error in the API gateway, but we still will have a record of the request.
+
+The policy to send the response HTTP message looks very similar to the request and so the complete policy configuration looks like this:
+
+    <policies>
+    	<inbound>
+    		<set-variable name="message-id" value="@(Guid.NewGuid())" />
+    		<log-to-eventhub logger-id="conferencelogger">
+            @{
+              var requestLine = string.Format("{0} {1} HTTP/1.1\r\n",
+                                                      context.Request.Method,
+                                                      context.Request.Url.Path + context.Request.Url.QueryString);
+
+              var body = context.Response.Body?.As<string>(true);
+              if ( body != null && body.Length > 1024) {
+                  body  = body.Substring(0,1024);
+              }
+
+              var headers = context.Request.Headers
+                              .Select(h => string.Format("{0}: {1}", h.Key, String.Join(", ",h.Value)))
+                              .ToArray<string>();
+
+              return "request:" + context.Variables["message-id"] + "\n"
+                                + requestLine
+                                + string.Join("\r\n", headers)
+                                + "\r\n\r\n" + body;
+            }
+        </log-to-eventhub>
+    	</inbound>
+    	<backend>
+    		<forward-request follow-redirects="true" />
+    	</backend>
+    	<outbound>
+    		<log-to-eventhub logger-id="conferencelogger">
+            @{
+                var statusLine = string.Format("HTTP/1.1 {0} {1}\r\n",
+                              context.Response.StatusCode, context.Response.StatusReason);
+
+                var body = context.Response.Body?.As<string>(true);
+                if ( body != null && body.Length > 1024) {
+                    body  = body.Substring(0,1024);
+                }
+
+                var headers = context.Response.Headers
+                            .Select(h => string.Format("{0}: {1}", h.Key, String.Join(", ",h.Value)))
+                            .ToArray<string>();
+
+                return "response:"  + context.Variables["message-id"] + "\r\n"
+                                    + statusLine
+                                    + string.Join("\r\n", headers)
+                                    + "\r\n\r\n" + body;
+            }
+        </log-to-eventhub>
+    	</outbound>
+    </policies>
+
+The `set-variable` policy creates a value that is accessible by both the `log-to-eventhub` policy in the `<inbound>` section and the `<outbound>` section.  
+
+## Receiving Events From Event Hub
+Events from Azure Event Hub are received using the [AMQP protocol](http://www.amqp.org/).  The Microsoft Service Bus team have made client libraries available to make the process easier.  There are two different approaches supported, one is being a *Direct Consumer* and the other is using the `EventProcessorHost` class.  Examples of these two approaches can be found in the [Event Hubs Programming Guide](event-hubs-programming-guide.md).  The short version, is `Direct Consumer` gives you complete control and the `EventProcessorHost` does some of the plumbing work for you but makes certain assumptions about how you will process those events.  
+
+In this sample, we will use the `EventProcessorHost` for simplicity, however it may not the best choice for this particular scenario.  `EventProcessorHost` does the hard work of making sure you don't have to worry about threading issues within a particular event processor class.  However, in our scenario, we are simply converting the message to another format and passing it along to another service using an async method.  There is no need for updating shared state and therefore no risk of threading issues.  Additionally, I did run into some issues calling certain async methods using the `EventProcessorHost` which made the solution less than optimal.     
+
+The central concept when using `EventProcessorHost` is to create a an implementation of the `IEventProcessor` interface which contains the method `ProcessEventAsync`.  The essence of that method is shown here:
+
+      async Task IEventProcessor.ProcessEventsAsync(PartitionContext context, IEnumerable<EventData> messages)
+      {
+
+          foreach (EventData eventData in messages)
+          {
+              string message = Encoding.UTF8.GetString(eventData.GetBytes());
+
+              _Queue.Enqueue(message);
+
+              _Logger.LogInfo(string.Format("Event received from partition: '{0}'", context.Lease.PartitionId));
+          }
+
+          ... checkpointing code snipped ...
+      }
+
+To ensure this method completes quickly and to avoid some task related issues, the message is put in a queue and processed by a background task.  The messages on the queue are passed to the following method,
+
+    private async Task ProcessEvent(string message)
+    {
+        _Logger.LogDebug("Processing Event");
+
+        HttpMessage httpMessage;
+
+        try {
+
+            httpMessage = HttpMessage.Parse(message);
+
+        } catch(ArgumentException ex)
+        {
+            _Logger.LogError(ex.Message);
+            return;
+        }
+
+        await _MessageContentProcessor.ProcessHttpMessage(httpMessage);
+
+    }
+
+This method uses parsing class to convert the message into a `HttpMessage` instance, which contains three pieces of data.
+
+      public class HttpMessage
+       {
+           public Guid MessageId { get; set; }
+           public bool IsRequest { get; set; }
+           public HttpRequestMessage HttpRequestMessage { get; set; }
+           public HttpResponseMessage HttpResponseMessage { get; set; }
+
+        ... parsing code snipped ...
+
+      }
+
+The `HttpMessage` instance contains a `MessageId` GUID that allows us to connect the HTTP request to the corresponding HTTP response and a boolean value that identifies if the object contains an instance of a HttpRequestMessage and HttpResponseMessage.  By using the built in HTTP classes from `System.Net.Http`, I was able to take advantage of the `application/http` parsing code that is included in `System.Net.Http.Formatting`.  
+
+The `HttpMessage` instance is then forwarded to implementation of `IHttpMessageProcessor` which is an interface I created to decouple the receiving and interpretation of the event from Azure Event Hub and the actual processing of it.
+
+
+## Forwarding the HTTP Message to a Logging and Analytics Tool
+For this sample, I decided it would interesting to push the HTTP Request over to the [Runscope](http://www.runscope.com) service which is a HTTP debugging, logging and monitoring cloud based service.  They have a free tier, so it is easy to try and it allows us to real-time see the HTTP requests flowing through our API Management Gateway.
+
+The `IHttpMessageProcessor` implementation looks like this,
+
+      public class RunscopeHttpMessageProcessor : IHttpMessageProcessor
+       {
+           private HttpClient _HttpClient;
+           private ILogger _Logger;
+           private string _BucketKey;
+           public RunscopeHttpMessageProcessor(HttpClient httpClient, ILogger logger)
+           {
+               _HttpClient = httpClient;
+               var key = Environment.GetEnvironmentVariable("APIMEVENTS-RUNSCOPE-KEY", EnvironmentVariableTarget.User);
+               _HttpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("bearer", key);
+               _HttpClient.BaseAddress = new Uri("https://api.runscope.com");
+               _BucketKey = Environment.GetEnvironmentVariable("APIMEVENTS-RUNSCOPE-BUCKET", EnvironmentVariableTarget.User);
+               _Logger = logger;
+           }
+
+           public async Task ProcessHttpMessage(HttpMessage message)
+           {
+               var runscopeMessage = new RunscopeMessage()
+               {
+                   UniqueIdentifier = message.MessageId
+               };
+
+               if (message.IsRequest)
+               {
+                   _Logger.LogInfo("Sending HTTP request " + message.MessageId.ToString());
+                   runscopeMessage.Request = RunscopeRequest.CreateFromAsync(message.HttpRequestMessage).Result;
+               }
+               else
+               {
+                   _Logger.LogInfo("Sending HTTP response " + message.MessageId.ToString());
+                   runscopeMessage.Response = RunscopeResponse.CreateFromAsync(message.HttpResponseMessage).Result;
+               }
+
+               var messagesLink = new MessagesLink() { Method = HttpMethod.Post };
+               messagesLink.BucketKey = _BucketKey;
+               messagesLink.RunscopeMessage = runscopeMessage;
+               var runscopeResponse = await _HttpClient.SendAsync(messagesLink.CreateRequest());
+               _Logger.LogDebug("Request sent to Runscope");
+           }
+       }
+
+I was able to take advantage of an [existing client library for Runscope](http://www.nuget.org/packages/Runscope.net.hapikit/0.9.0-alpha) that makes it easy to push `HttpRequestMessage` and `HttpResponseMessage` instances up into their service.
+
+## Summary
+Azure API Management gateway provides an ideal place to capture the HTTP traffic travelling to and from your APIs. Azure Event Hubs is a highly scalable, low cost solution for capturing that traffic and feeding it into secondary processing systems for logging, monitoring and other sophisticated analytics.  Connecting to 3rd party traffic monitoring systems like Runscope is a simple as a few dozen lines of code.
