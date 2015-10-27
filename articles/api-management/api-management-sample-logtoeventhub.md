@@ -240,7 +240,7 @@ The `IHttpMessageProcessor` implementation looks like this,
 I was able to take advantage of an [existing client library for Runscope](http://www.nuget.org/packages/Runscope.net.hapikit/0.9.0-alpha) that makes it easy to push `HttpRequestMessage` and `HttpResponseMessage` instances up into their service.  In order to access the Runscope API you will need an account and an API Key.  Instructions for getting an API key can be found in the [Creating Applications to Access Runscope API](http://blog.runscope.com/posts/creating-applications-to-access-the-runscope-api) screencast.
 
 ## Complete Sample
-The [source code](https://github.com/darrelmiller/ApimEventProcessor) and tests for the sample are on Github.  You will need an API Management Service, and Event Hub, a Storage Account to run the sample for yourself.   
+The [source code](https://github.com/darrelmiller/ApimEventProcessor) and tests for the sample are on Github.  You will need an [API Management Service](api-management-get-started.md), and [a connected Event Hub](api-management-howto-log-event-hubs.md), a [Storage Account](storage-create-storage-account.md) to run the sample for yourself.   
 
 ## Summary
 Azure API Management gateway provides an ideal place to capture the HTTP traffic travelling to and from your APIs. Azure Event Hubs is a highly scalable, low cost solution for capturing that traffic and feeding it into secondary processing systems for logging, monitoring and other sophisticated analytics.  Connecting to 3rd party traffic monitoring systems like Runscope is a simple as a few dozen lines of code.
