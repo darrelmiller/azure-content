@@ -242,5 +242,7 @@ I was able to take advantage of an [existing client library for Runscope](http:/
 ## Complete Sample
 The [source code](https://github.com/darrelmiller/ApimEventProcessor) and tests for the sample are on Github.  You will need an [API Management Service](api-management-get-started.md), and [a connected Event Hub](api-management-howto-log-event-hubs.md), a [Storage Account](storage-create-storage-account.md) to run the sample for yourself.   
 
+![Demonstration of request being forwarded to Runscope](./media/api-management-sample-logtoeventhub/apim-eventhub-runscope.gif)
+
 ## Summary
 Azure API Management gateway provides an ideal place to capture the HTTP traffic travelling to and from your APIs. Azure Event Hubs is a highly scalable, low cost solution for capturing that traffic and feeding it into secondary processing systems for logging, monitoring and other sophisticated analytics.  Connecting to 3rd party traffic monitoring systems like Runscope is a simple as a few dozen lines of code.
