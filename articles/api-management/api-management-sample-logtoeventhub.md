@@ -1,6 +1,6 @@
 <properties
-   pageTitle="Connecting API Management Gateway to Event Hubs for Logging and Analytics"
-   description="Connecting API Management Gateway to Event Hubs for Logging and Analytics"
+   pageTitle="Connecting API Management Gateway to Event Hubs for Logging and Monitoring"
+   description="Connecting API Management Gateway to Event Hubs for Logging and Monitoring"
    services="api-management"
    documentationCenter=""
    authors="darrelmiller"
@@ -16,7 +16,7 @@
    ms.date="mm/dd/yyyy"
    ms.author="darrel@tavis.ca"/>
 
-# Connecting API Management Gateway to EventHubs for Logging and Analytics
+# Connecting API Management Gateway to EventHubs for Logging and Monitoring
 
 The API Management Gateway provides many capabilities to enhance the processing of HTTP requests sent to your HTTP API.  However, the existance of the requests and responses are transient. The request is made, it flows through the gateway to your backend API. Your API processes the request and a response flows back through the gateway to the API consumer. The API Management service keeps some important statistics about the APIs for display in the Publisher portal dashboard, but beyond that, the details are gone.
 
