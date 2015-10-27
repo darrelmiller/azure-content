@@ -74,113 +74,105 @@ To ensure our messages are delivered to consumers in order and take advantage of
 The request body is trucated to only 1024 bytes. This could be increased, however individual Event Hub messages are limited to 256KB, so it is likely that some HTTP message bodies will not fit in a single message. When doing logging and analytics a significant amount of information can be derived from just the HTTP request line and headers. Also, many API requests only return small bodies and so the loss of information value by truncating large bodies is fairly minimal in comparison to the reduction in transfer, processing and storage costs to keep all body contents. One final note about processing the body is that we need to pass `true` to the As<string>() method because we are reading the body contents, but was also want the backend API to be able to read the body.  By passing true to this method we cause the body to be buffered so that it can be read a second time.  This is important to be aware of if you have an API that does uploading of very large files or uses long polling.  In these cases it would be best to avoid reading the body at all.   
 
 ### Message Metadata
-When building the complete message to send to the event hub, the first line is not actually part of the `application/http` message.  The first line is additional metadata consisting of whether the message is a request or response message and a message id which is used to correlate requests to responses.  The message id is created by using another policy that looks like this:
+When building the complete message to send to the event hub, the first line is not actually part of the `application/http` message. The first line is additional metadata consisting of whether the message is a request or response message and a message id which is used to correlate requests to responses.  The message id is created by using another policy that looks like this:
 
     <set-variable name="message-id" value="@(Guid.NewGuid())" />
 
-We could have created the request message, stored that in a variable until the response was returned and then simply sent the request and response as a single message.  However, by sending the request and response independently and using a message id to correlate the two, we get a bit more flexibily in the message size, the request will appear in our logging dashboard sooner.  There also may be some scenarios where a valid response is never sent to the event hub, possibly due to a fatal request error in the API gateway, but we still will have a record of the request.
+We could have created the request message, stored that in a variable until the response was returned and then simply sent the request and response as a single message.  However, by sending the request and response independently and using a message id to correlate the two, we get a bit more flexibility in the message size, the ability to take advantage of multiple partitions whilst maintaining message order and the request will appear in our logging dashboard sooner. There also may be some scenarios where a valid response is never sent to the event hub, possibly due to a fatal request error in the API gateway, but we still will have a record of the request.
 
 The policy to send the response HTTP message looks very similar to the request and so the complete policy configuration looks like this:
 
-    <policies>
-    	<inbound>
-    		<set-variable name="message-id" value="@(Guid.NewGuid())" />
-    		<log-to-eventhub logger-id="conferencelogger">
-            @{
-              var requestLine = string.Format("{0} {1} HTTP/1.1\r\n",
-                                                      context.Request.Method,
-                                                      context.Request.Url.Path + context.Request.Url.QueryString);
+      <policies>
+      	<inbound>
+      		<set-variable name="message-id" value="@(Guid.NewGuid())" />
+      		<log-to-eventhub logger-id="conferencelogger" partition-id="0">
+              @{
+                  var requestLine = string.Format("{0} {1} HTTP/1.1\r\n",
+                                                              context.Request.Method,
+                                                              context.Request.Url.Path + context.Request.Url.QueryString);
 
-              var body = context.Response.Body?.As<string>(true);
-              if ( body != null && body.Length > 1024) {
-                  body  = body.Substring(0,1024);
+                  var body = context.Request.Body?.As<string>(true);
+                  if (body != null && body.Length > 1024)
+                  {
+                      body = body.Substring(0, 1024);
+                  }
+
+                  var headers = context.Request.Headers
+                                              .Select(h => string.Format("{0}: {1}", h.Key, String.Join(", ", h.Value)))
+                                              .ToArray<string>();
+
+                  var headerString = (headers.Any()) ? string.Join("\r\n", headers) + "\r\n" : string.Empty;
+
+                  return "request:"   + context.Variables["message-id"] + "\n"
+                                      + requestLine + headerString + "\r\n" + body;
               }
+          </log-to-eventhub>
+      	</inbound>
+      	<backend>
+      		<forward-request follow-redirects="true" />
+      	</backend>
+      	<outbound>
+      		<log-to-eventhub logger-id="conferencelogger" partition-id="1">
+              @{
+                  var statusLine = string.Format("HTTP/1.1 {0} {1}\r\n",
+                                                      context.Response.StatusCode,
+                                                      context.Response.StatusReason);
 
-              var headers = context.Request.Headers
-                              .Select(h => string.Format("{0}: {1}", h.Key, String.Join(", ",h.Value)))
-                              .ToArray<string>();
+                  var body = context.Response.Body?.As<string>(true);
+                  if (body != null && body.Length > 1024)
+                  {
+                      body = body.Substring(0, 1024);
+                  }
 
-              return "request:" + context.Variables["message-id"] + "\n"
-                                + requestLine
-                                + string.Join("\r\n", headers)
-                                + "\r\n\r\n" + body;
-            }
-        </log-to-eventhub>
-    	</inbound>
-    	<backend>
-    		<forward-request follow-redirects="true" />
-    	</backend>
-    	<outbound>
-    		<log-to-eventhub logger-id="conferencelogger">
-            @{
-                var statusLine = string.Format("HTTP/1.1 {0} {1}\r\n",
-                              context.Response.StatusCode, context.Response.StatusReason);
+                  var headers = context.Response.Headers
+                                                  .Select(h => string.Format("{0}: {1}", h.Key, String.Join(", ", h.Value)))
+                                                  .ToArray<string>();
 
-                var body = context.Response.Body?.As<string>(true);
-                if ( body != null && body.Length > 1024) {
-                    body  = body.Substring(0,1024);
-                }
+                  var headerString = (headers.Any()) ? string.Join("\r\n", headers) + "\r\n" : string.Empty;
 
-                var headers = context.Response.Headers
-                            .Select(h => string.Format("{0}: {1}", h.Key, String.Join(", ",h.Value)))
-                            .ToArray<string>();
-
-                return "response:"  + context.Variables["message-id"] + "\r\n"
-                                    + statusLine
-                                    + string.Join("\r\n", headers)
-                                    + "\r\n\r\n" + body;
-            }
-        </log-to-eventhub>
-    	</outbound>
-    </policies>
+                  return "response:"  + context.Variables["message-id"] + "\n"
+                                      + statusLine + headerString + "\r\n" + body;
+             }
+          </log-to-eventhub>
+      	</outbound>
+      </policies>
 
 The `set-variable` policy creates a value that is accessible by both the `log-to-eventhub` policy in the `<inbound>` section and the `<outbound>` section.  
 
 ## Receiving Events From Event Hub
-Events from Azure Event Hub are received using the [AMQP protocol](http://www.amqp.org/).  The Microsoft Service Bus team have made client libraries available to make the process easier.  There are two different approaches supported, one is being a *Direct Consumer* and the other is using the `EventProcessorHost` class.  Examples of these two approaches can be found in the [Event Hubs Programming Guide](event-hubs-programming-guide.md).  The short version, is `Direct Consumer` gives you complete control and the `EventProcessorHost` does some of the plumbing work for you but makes certain assumptions about how you will process those events.  
+Events from Azure Event Hub are received using the [AMQP protocol](http://www.amqp.org/).  The Microsoft Service Bus team have made client libraries available to make the consuming events easier. There are two different approaches supported, one is being a *Direct Consumer* and the other is using the `EventProcessorHost` class.  Examples of these two approaches can be found in the [Event Hubs Programming Guide](event-hubs-programming-guide.md).  The short version of the differences is, `Direct Consumer` gives you complete control and the `EventProcessorHost` does some of the plumbing work for you but makes certain assumptions about how you will process those events.  
 
-In this sample, we will use the `EventProcessorHost` for simplicity, however it may not the best choice for this particular scenario.  `EventProcessorHost` does the hard work of making sure you don't have to worry about threading issues within a particular event processor class.  However, in our scenario, we are simply converting the message to another format and passing it along to another service using an async method.  There is no need for updating shared state and therefore no risk of threading issues.  Additionally, I did run into some issues calling certain async methods using the `EventProcessorHost` which made the solution less than optimal.     
+### EventProcessorHost
+In this sample, we will use the `EventProcessorHost` for simplicity, however it may not the best choice for this particular scenario.  `EventProcessorHost` does the hard work of making sure you don't have to worry about threading issues within a particular event processor class.  However, in our scenario, we are simply converting the message to another format and passing it along to another service using an async method.  There is no need for updating shared state and therefore no risk of threading issues.  For most scenarios, `EventProcessorHost` is probably the best choice and it is certainly the easier option.     
 
-The central concept when using `EventProcessorHost` is to create a an implementation of the `IEventProcessor` interface which contains the method `ProcessEventAsync`.  The essence of that method is shown here:
 
-      async Task IEventProcessor.ProcessEventsAsync(PartitionContext context, IEnumerable<EventData> messages)
+### IEventProcessor
+The central concept when using `EventProcessorHost` is to create a an implementation of the `IEventProcessor` interface which contains the method `ProcessEventAsync`. The essence of that method is shown here:
+
+  async Task IEventProcessor.ProcessEventsAsync(PartitionContext context, IEnumerable<EventData> messages)
       {
 
-          foreach (EventData eventData in messages)
-          {
-              string message = Encoding.UTF8.GetString(eventData.GetBytes());
+           foreach (EventData eventData in messages)
+           {
+               _Logger.LogInfo(string.Format("Event received from partition: {0} - {1}", context.Lease.PartitionId,eventData.PartitionKey));
 
-              _Queue.Enqueue(message);
-
-              _Logger.LogInfo(string.Format("Event received from partition: '{0}'", context.Lease.PartitionId));
-          }
-
-          ... checkpointing code snipped ...
-      }
-
-To ensure this method completes quickly and to avoid some task related issues, the message is put in a queue and processed by a background task.  The messages on the queue are passed to the following method,
-
-    private async Task ProcessEvent(string message)
-    {
-        _Logger.LogDebug("Processing Event");
-
-        HttpMessage httpMessage;
-
-        try {
-
-            httpMessage = HttpMessage.Parse(message);
-
-        } catch(ArgumentException ex)
-        {
-            _Logger.LogError(ex.Message);
-            return;
+               try
+               {
+                   var httpMessage = HttpMessage.Parse(eventData.GetBodyStream());
+                   await _MessageContentProcessor.ProcessHttpMessage(httpMessage);
+               }
+               catch (Exception ex)
+               {
+                   _Logger.LogError(ex.Message);
+               }
+           }
+            ... checkpointing code snipped ...
         }
 
-        await _MessageContentProcessor.ProcessHttpMessage(httpMessage);
+A list of EventData objects are passed into the method and we iterate over that list.  The bytes of each method are parsed into a HttpMessage object and that object is passed to an instance of IHttpMessageProcessor.
 
-    }
-
-This method uses parsing class to convert the message into a `HttpMessage` instance, which contains three pieces of data.
+### HttpMessage
+The `HttpMessage` instance contains three pieces of data:
 
       public class HttpMessage
        {
@@ -195,11 +187,12 @@ This method uses parsing class to convert the message into a `HttpMessage` insta
 
 The `HttpMessage` instance contains a `MessageId` GUID that allows us to connect the HTTP request to the corresponding HTTP response and a boolean value that identifies if the object contains an instance of a HttpRequestMessage and HttpResponseMessage.  By using the built in HTTP classes from `System.Net.Http`, I was able to take advantage of the `application/http` parsing code that is included in `System.Net.Http.Formatting`.  
 
+### IHttpMessageProcessor
 The `HttpMessage` instance is then forwarded to implementation of `IHttpMessageProcessor` which is an interface I created to decouple the receiving and interpretation of the event from Azure Event Hub and the actual processing of it.
 
 
-## Forwarding the HTTP Message to a Logging and Analytics Tool
-For this sample, I decided it would interesting to push the HTTP Request over to the [Runscope](http://www.runscope.com) service which is a HTTP debugging, logging and monitoring cloud based service.  They have a free tier, so it is easy to try and it allows us to real-time see the HTTP requests flowing through our API Management Gateway.
+## Forwarding the HTTP Message to a Logging and Monitoring Tool
+For this sample, I decided it would be interesting to push the HTTP Request over to [Runscope](http://www.runscope.com). Runscope is a cloud based service that specializes in HTTP debugging, logging and monitoring.  They have a free tier, so it is easy to try and it allows us to see the HTTP requests in real-time flowing through our API Management gateway.
 
 The `IHttpMessageProcessor` implementation looks like this,
 
@@ -244,7 +237,10 @@ The `IHttpMessageProcessor` implementation looks like this,
            }
        }
 
-I was able to take advantage of an [existing client library for Runscope](http://www.nuget.org/packages/Runscope.net.hapikit/0.9.0-alpha) that makes it easy to push `HttpRequestMessage` and `HttpResponseMessage` instances up into their service.
+I was able to take advantage of an [existing client library for Runscope](http://www.nuget.org/packages/Runscope.net.hapikit/0.9.0-alpha) that makes it easy to push `HttpRequestMessage` and `HttpResponseMessage` instances up into their service.  In order to access the Runscope API you will need an account and an API Key.  Instructions for getting an API key can be found in the [Creating Applications to Access Runscope API](http://blog.runscope.com/posts/creating-applications-to-access-the-runscope-api) screencast.
+
+## Complete Sample
+The [source code](https://github.com/darrelmiller/ApimEventProcessor) for the sample is on Github.  You will need an API Management Service, and Event Hub, a Storage Account to run the sample for yourself.   
 
 ## Summary
 Azure API Management gateway provides an ideal place to capture the HTTP traffic travelling to and from your APIs. Azure Event Hubs is a highly scalable, low cost solution for capturing that traffic and feeding it into secondary processing systems for logging, monitoring and other sophisticated analytics.  Connecting to 3rd party traffic monitoring systems like Runscope is a simple as a few dozen lines of code.
