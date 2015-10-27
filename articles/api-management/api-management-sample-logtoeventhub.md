@@ -221,12 +221,12 @@ The `IHttpMessageProcessor` implementation looks like this,
                if (message.IsRequest)
                {
                    _Logger.LogInfo("Sending HTTP request " + message.MessageId.ToString());
-                   runscopeMessage.Request = RunscopeRequest.CreateFromAsync(message.HttpRequestMessage).Result;
+                   runscopeMessage.Request = await RunscopeRequest.CreateFromAsync(message.HttpRequestMessage);
                }
                else
                {
                    _Logger.LogInfo("Sending HTTP response " + message.MessageId.ToString());
-                   runscopeMessage.Response = RunscopeResponse.CreateFromAsync(message.HttpResponseMessage).Result;
+                   runscopeMessage.Response = await RunscopeResponse.CreateFromAsync(message.HttpResponseMessage);
                }
 
                var messagesLink = new MessagesLink() { Method = HttpMethod.Post };
