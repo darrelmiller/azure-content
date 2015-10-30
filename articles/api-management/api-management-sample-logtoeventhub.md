@@ -1,5 +1,5 @@
 <properties
-   pageTitle="Connecting API Management to Event Hubs for Logging and Monitoring"
+   pageTitle="Using API Management and Event Hubs for Logging and Monitoring"
    description="Sample application demonstrating the LogToEventHub policy by connecting Azure API Management, Azure Event Hubs and Runscope for HTTP logging and monitoring"
    services="api-management"
    documentationCenter=""
