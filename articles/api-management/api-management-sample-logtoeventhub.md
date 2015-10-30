@@ -1,22 +1,22 @@
 <properties
    pageTitle="Connecting API Management to Event Hubs for Logging and Monitoring"
-   description="Connecting API Management to Event Hubs for Logging and Monitoring"
+   description="Sample application demonstrating the LogToEventHub policy by connecting Azure API Management, Azure Event Hubs and Runscope for HTTP logging and monitoring"
    services="api-management"
    documentationCenter=""
    authors="darrelmiller"
-   manager="manager-alias"
+   manager=""
    editor=""/>
 
 <tags
    ms.service="api-management"
-   ms.devlang="may be required"
+   ms.devlang="dotnet"
    ms.topic="article"
-   ms.tgt_pltfrm="may be required"
-   ms.workload="required"
-   ms.date="mm/dd/yyyy"
-   ms.author="darrel@tavis.ca"/>
+   ms.tgt_pltfrm="na"
+   ms.workload="na"
+   ms.date="10/30/2015"
+   ms.author="v-darmi"/>
 
-# Connecting API Management to Event Hubs for Logging and Monitoring
+# Azure API Management LogToEventHub Policy Sample
 
 The [API Management service](api-management-key-concepts.md) provides many capabilities to enhance the processing of HTTP requests sent to your HTTP API. However, the existence of the requests and responses are transient. The request is made and it flows through the API Management service to your backend API. Your API processes the request and a response flows back through to the API consumer. The API Management service keeps some important statistics about the APIs for display in the Publisher portal dashboard, but beyond that, the details are gone.
 
